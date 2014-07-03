@@ -20,7 +20,7 @@ class IsosurfaceWindow(QWidget):
         # Create Qt layouts and widgets.
         vlout = QVBoxLayout(self)
         glout = QGridLayout()
-        self.title   = QLabel("Iso Contour Sweep Example")
+        self.title   = QLabel("Isosurface Sweep Example")
         self.title.setFont(QFont("Arial", 20, bold=True))
         self.sweep   = QPushButton("Sweep")
         self.lbound  = QLineEdit("1.0")

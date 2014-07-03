@@ -22,23 +22,33 @@ VisIt is an open source, turnkey application for scientific data analysis and vi
 Introduction
 ---------------------------
 
-VisIt [VisIt05]_, like EnSight [EnSight09]_ and ParaView [ParaView05]_, is an application designed for post processing of mesh based scientific data. VisIt's core infrastructure is written in C++ and it uses VTK [VTK96]_ for its underlying mesh data model. Its distributed-memory parallel architecture is tailored to process domain decomposed meshes created by simulations on large-scale HPC clusters.
+VisIt [VisIt05]_, like EnSight [EnSight09]_ and ParaView [ParaView05]_, is an application designed for post processing mesh-based scientific data. VisIt's core infrastructure is written in C++ and it uses VTK [VTK96]_ for its underlying mesh data model. VisIt's distributed-memory parallel architecture is tailored to process domain decomposed meshes created by simulations on large-scale HPC clusters.
 
-Early in development, the VisIt team adopted Python as the foundation of VisIt’s primary scripting interface. The scripting interface is available from both a standard Python interpreter and a custom command line client. The interface provides access to all features available through VisIt’s GUI. It also includes support for macro recording of GUI actions to Python snippets and full control of windowless batch processing.
+Early in development, the VisIt team adopted Python as the foundation of VisIt’s scripting interface. The scripting interface is available from both a standard Python interpreter and a custom command line interface (CLI) binary. The interface provides access to all of the features available through VisIt’s GUI. It also includes support for macro recording of GUI actions to Python snippets and full control of windowless batch processing.
 
 While Python has always played an important scripting role in VisIt, two recent development efforts have greatly expanded VisIt’s Python capabilities:
 
 
 1. We now support custom UI development using Qt via PySide [PySide]_. This allows users to embed VisIt’s visualization windows into their own Python applications. This provides a path to extend VisIt’s existing GUI and for rapid development of streamlined UIs for specific use cases.
 
-2. We recently enhanced VisIt by embedding Python interpreters into our data flow network pipelines. This provides fine grained access, allowing users to write custom algorithms in Python that manipulate mesh data via VTK’s Python wrappers and leverage packages such as NumPy [NumPy]_ and SciPy [SciPy]_. Current support includes the ability to create derived mesh quantities and execute data summarization operations.
+2. We recently enhanced VisIt by embedding Python interpreters into our data flow network pipelines. This provides fine grained access to meshes, allowing users to write custom algorithms in Python that manipulate mesh data via VTK’s Python wrappers and leverage packages such as NumPy [NumPy]_ and SciPy [SciPy]_. Current support includes the ability to create derived mesh quantities and execute data summarization operations.
 
 
 This paper provides an overview of how VisIt leverages Python in its software architecture, outlines these two recent Python feature enhancements, and introduces several examples of use cases enabled by Python.
 
+Adoption of Python in Scientific Visualization Tools
+-----------------------------------------------------
 
-Python Integration Overview
--------------------------------
+VisIt is one of many mesh-based scientific visualization tools that leverage Python.
+Kitware's Visualization Toolkit (VTK) introduced Python bindings in version 2.1 in 1998 [VTKSrc]_. MayaVi [MayaVi11]_, a Python scientific visualization tool that leverages VTK, was first released in May 2001. The matplotlib [MPL07]_ module began development in 2002. matplotlib is arguably the most widely used general Python visualization package and it includes some mesh visualization features. Kitware's Insight Toolkit (ITK) started including Python bindings with the 1.4 release in September 2003 [ITK_R1_4]_. VisTrails, first released in 2007, is a Python scientific workflow/provenance manager that uses VTK, ITK, and matplotlib among other packages.  
+
+Among visualization tools that target parallel HPC clusters in addition to desktop systems: VisIt adopted Python in 2001 and has included a Python interface since VisIt's initial release in 2002. CEI released a Python interface with EnSight 8.2 in August 2006. Paraview's extensive Tcl infrastructure was migrated to Python for the 3.0 release in May 2007 [PV_R3_0]_. 
+
+Python has contributed to the success of all of these efforts. Even among this short list of tools, their Python APIs employ a diverse set of programming paradigms (procedural, object oriented, idiomatic Python, etc.). The focus of this paper is to provide context and working knowledge of VisIt's use of Python.
+
+
+VisIt Python Integration Overview
+---------------------------------
 VisIt employs a client-server architecture composed of several interacting software components:
 
 - A *viewer* process coordinates the state of the system and provides the visualization windows used to display data. 
@@ -53,22 +63,27 @@ VisIt employs a client-server architecture composed of several interacting softw
    
    Python integration with VisIt's components. :label:`arch`
 
-*Client* and *viewer* proceses are typically run on a desktop machine and connect to a parallel *compute engine* running remotely on a HPC cluster. For smaller data sets, a local serial or parallel *compute engine* is also commonly used. 
+*Client* and *viewer* processes are typically run on a desktop machine and connect to a parallel *compute engine* running remotely on a HPC cluster. For smaller data sets, a local serial or parallel *compute engine* is also commonly used. 
 
-Figure :ref:`arch` outlines how Python is integrated into VisIt's components. VisIt both extends and embeds Python. State control of the *viewer* is provided by a Python Client Interface, available as Python/C extension module. This interface is outlined in the `Python Client Interface`_ section, and extensions to support custom UIs written in Python are described in the `Custom Python UIs`_ section. Direct access to low-level mesh data structures is provided by a Python Filter Runtime, embedded in VisIt's *compute engine* processes. This runtime is described in the `Python Filter Runtime`_ section.
+LLNL user requests for Python, the features of the Python/C API, and the ability to embed a Python interpreter were important factors in the selection of Python for VisIt's scripting interface in 2001. Figure :ref:`arch` outlines how Python is integrated into VisIt's components. VisIt both extends and embeds Python. State control of the *viewer* is provided by a Python Client Interface, implemented in a Python/C extension module. This interface is outlined in the `Python Client Interface`_ section. Extensions to support custom UIs written in Python are described in the `Custom Python UIs`_ section. Direct access to low-level mesh data structures is provided by a Python Filter Runtime, which is embedded in VisIt's *compute engine* processes. This runtime is described in the `Python Filter Runtime`_ section.
 
 .. _Python Client Interface:
 
 Python Client Interface
 ---------------------------
-VisIt clients interact with the *viewer* process to control the state of visualization windows and data processing pipelines. Internally the system uses a collection of state objects that rely on a publish/subscribe design pattern for communication among components. These state objects are wrapped by a
-Python/C extension module to expose a Python state control API. The function calls are typically imperative: *Add a new plot*, *Find the maximum value of a scalar field*, etc. The client API is documented extensively in the VisIt Python Interface Manual [VisItPyRef]_.  To introduce the API in this paper we provide a simple example script, `Listing 1`_, that demonstrates VisIt's five primary visualization building blocks:
+VisIt *client* processes interact with a *viewer* process to control the state of visualization windows and data processing pipelines. The *viewer* manages a collection of state objects that rely on a publish/subscribe design pattern for communication between components. To implement this system, the VisIt team developed a custom remote procedure call (RPC) solution that relies on code generation to create C++ state objects that can be shared between components over network connections. 
+
+To enable Python scripting, the team extended the code generation tools to wrap state objects into a Python/C extension module that uses the RPC client infrastructure. Because of this direct approach, the Python client API heavily reflects the procedural nature of VisIt's RPC solution. The interface function calls are typically imperative: *Add a new plot*, *Find the maximum value of a scalar field*, etc. For complex requests, users set the attributes of state objects and pass these objects to Python methods that use RPCs to notify the *viewer* process.
+ 
+.. The Python state objects have explicit get and set methods for each attribute that mirror the C++ object interfaces, however the Python getattr and setattr interface is more commonly used. 
+
+The interface is accessible to users without Python or object oriented programming knowledge and still suitable for Python power users. The procedural RPC system also helped enable recording GUI actions into Python snippets. Recording only captures the RPCs executed and state objects involved, instead of the relationships of actions between several objects. The client API is documented extensively in the VisIt Python Interface Manual [VisItPyRef]_.  To introduce the API in this paper, we provide a simple example script, `Listing 1`_, that demonstrates VisIt's five primary visualization building blocks:
  
 .. This client API allows you to drive the, analogous to interacting with VisIt's GUI.
  
 - **Databases**: File readers and data sources.
 - **Plots**: Data set renderers.
-- **Operators**: Filters implementing data set transformations.
+- **Operators**: Filters implementing mesh transformations.
 - **Expressions**: Framework enabling the creation of derived quantities from existing mesh fields.
 - **Queries**: Data summarization operations.
 
@@ -109,12 +124,12 @@ Listing 1: Trace streamlines along the gradient of a scalar field.
     DrawPlots()
 
 .. figure:: streamline_example.png
-   :scale: 25%
+   :scale: 24%
    :align: center
    
    Pseudocolor and Streamline plots setup using the script in `Listing 1`. :label:`stream`
 
-In this example, the Silo database reader is automatically selected to read meshes from the input file 'noise.silo'. A *Pseudocolor* plot is created to display the scalar field named 'hardyglobal'. The mesh is transformed by a *ThreeSlice* operator to limit the volume displayed by the *Pseudocolor* plot to three external faces.  We use a query to obtain and print the maximum value of the 'hardyglobal' field. An expression is defined to extract the gradient of the 'hardyglobal' scalar field. Finally, this gradient vector is used as the input field for a second plot, which traces streamlines. Figure :ref:`stream` shows the resulting visualization which includes both the *Pseudocolor* and *Streamline* plots. 
+In this example, the Silo database reader is automatically selected to read meshes from the file 'noise.silo'. A *Pseudocolor* plot is created to display the scalar field named 'hardyglobal'. The mesh is transformed by a *ThreeSlice* operator to limit the volume displayed by the *Pseudocolor* plot to three external faces.  We use a query to obtain and print the maximum value of the 'hardyglobal' field. An expression is defined to extract the gradient of the 'hardyglobal' scalar field. Finally, this gradient vector is used as the input field for a second plot, which traces streamlines. Figure :ref:`stream` shows the resulting visualization which includes both the *Pseudocolor* and *Streamline* plots. 
 
 
 
@@ -122,24 +137,27 @@ Accessing the Python Client Interface
 ++++++++++++++++++++++++++++++++++++++
 For convenience, you can access the client interface from a custom binary or a standalone Python interpreter. 
 
-.. **CLI** 
 
-VisIt provides a command line interface (CLI) binary that embeds a Python interpreter and automatically imports the client interface module. There are several ways to access this binary:
+VisIt provides a command line interface (CLI) binary that embeds a Python interpreter and automatically imports the *visit* module. There are several ways to access this binary:
 
 - From VisIt's GUI, you can start a CLI instance from the "Launch CLI" entry in the "Options" menu.
-- Invoking VisIt from the command line with the ``-cli`` option starts the CLI and launches a connected *viewer* process:
+- Invoking VisIt from the command line with the ``-cli`` option starts the CLI and launches a connected *viewer* process: 
 
-    ``>visit -cli``
 
-- For batch processing, the ``-nowin`` option launches the viewer in an offscreen mode and you can select a Python script file to run using the ``-s`` option:
 
-    ``>visit -cli -nowin -s <script_file.py>``
+  ``> visit -cli``
 
-.. **Standalone** 
+- For batch processing, the ``-nowin`` option launches the *viewer* in an offscreen mode and you can select a Python script file to run using the ``-s`` option: 
+
+
+
+  ``> visit -cli -nowin -s <script.py>``
+
+
 
 You can also import the interface into a standalone Python interpreter and use the module to launch and control a new instance of VisIt. `Listing 2`_ provides example code for this use case. The core implementation of the VisIt module is a Python/C extension module, so normal caveats for binary compatibly with your Python interpreter apply. 
 
-The features of the VisIt interface are dependent on the version of VisIt selected, so the import process is broken into two steps. First, a small front end module is imported. This module allows you to select the options used to launch VisIt. Examples include: using ``-nowin`` mode for the *viewer* process, selecting a specific version of VisIt, ``-v 2.5.1``, etc. After these options are set the *Launch()* method creates the appropriate Visit components. During the launch, the interfaces to the available state objects are enumerated and dynamically imported into the *visit* module.
+The features of the VisIt interface are dependent on the version of VisIt selected, so the import process is broken into two steps. First, a small front end module is imported. This module allows you to select the options used to launch VisIt. Examples include: using ``-nowin`` mode for the *viewer* process, selecting a specific version of VisIt, ``-v 2.5.1``, etc. After these options are set, the *Launch()* method creates the appropriate VisIt components. During the launch, the interfaces to the available state objects are enumerated and dynamically imported into the *visit* module.
  
 .. _Listing 2:
 
@@ -164,18 +182,16 @@ Listing 2: Launch and control VisIt from a standalone Python interpreter.
 Macro Recording
 ++++++++++++++++++++++++++++++++++++++
 VisIt's GUI provides a *Commands* window that allows you to record GUI actions
-into short Python snippets. While the client interface supports standard Python introspection methods (``dir()``, ``help()``, etc), the *Commands* window provides a powerful learning tool for VisIt's Python API. You can access this window from the "Commands" entry in the "Options" menu. From this window you can record your actions into one of several source scratch pads and convert common actions into macros that can be run using the *Marcos* window. 
+into Python snippets. While the client interface supports standard Python introspection methods (``dir()``, ``help()``, etc), the *Commands* window provides a powerful learning tool for VisIt's Python Client Interface. You can access this window from the "Commands" entry in the "Options" menu. From this window you can record your GUI actions into one of several source scratch pads and convert common actions into macros that can be run using the *Marcos* window. 
 
 
 .. _Custom Python UIs:
 
 Custom Python UIs
 -------------------------------
-VisIt provides 100+ database readers, 60+ operators, and over 20 different plots. This toolset makes it a robust application well suited 
-to analyze problem sets from a wide variety of scientific domains. However, in many cases users would like to utilize only a specific subset of VisIt's features  
-and understanding the intricacies of a large general purpose tool can be a daunting task.  For example, climate scientists require specialized functionality such as viewing information on Lat/Long grids bundled with computations of zonal averages. Whereas, scientists in the fusion energy science community require visualizations of interactions between magnetic and particle velocity fields within a tokomak simulation. To make it easier to target specific user communities, we extended VisIt with ability to create custom UIs in Python. 
-Since we have an investment in our existing Qt user interface, we choose PySide, an LGPL Python Qt wrapper, as our primary Python UI framework.
-Leveraging our existing Python Client Interface along with new PySide support allows us to easily and quickly create custom user interfaces that provide specialized analysis routines and directly target the core needs of specific user communities. Using Python allows us to do this in a fraction of the time it would take to do so using our C++ APIs.
+VisIt provides 100+ database readers, 60+ operators, and over 20 different plots. This toolset makes it a robust application well suited to analyze data from a wide variety of scientific domains. However, for users that only need a specific subset of VisIt's features, understanding the intricacies of such a large general purpose tool can be daunting.  For example, climate scientists require specialized functionality such as viewing information on Lat/Long grids bundled with computations of spatial averages. Whereas, scientists in the fusion energy science community require visualizations of interactions between magnetic and particle velocity fields within a tokomak simulation. To make it easier to target specific user communities, we extended VisIt with ability to create custom UIs in Python. 
+Since we have an investment in our existing Qt user interface, we choose PySide, a LGPL Python Qt wrapper, as our primary Python UI framework.
+Leveraging our existing Python Client Interface along with new PySide support allows us to easily and quickly create custom user interfaces that directly target the core needs of specific user communities. Using Python allows us to do this in a fraction of the time it would take to do so using our existing C++ APIs.
 
 .. Adding support for Python UIs allowed us effectively address this problem. 
 .. One of the challenges with providing a general visualization toolset is a steep learning curve for domain scientists to discern which subset of visualization .. algorithms and analysis tools provides them with accurate results in an efficient manner. 
@@ -183,15 +199,15 @@ Leveraging our existing Python Client Interface along with new PySide support al
 
 VisIt provides two major components to its Python UI interface: 
 
-- The ability to embed VisIt's render windows.
+- The ability to embed VisIt's Render Windows.
 - The ability to reuse VisIt's existing set of GUI widgets. 
 
-The ability to utilize renderers as Qt widgets allows VisIt's visualization windows to be embedded in custom PySide GUIs and other third party applications. Re-using VisIt's existing generic widget toolset, which provides functionally such as remote filesystem browsing and a visualization pipeline editor, allows custom applications to incorporate advanced features with little difficulty. 
+The ability to utilize Render Windows as Qt widgets allows VisIt's visualization windows to be embedded in custom PySide UIs and other third party applications. Re-using VisIt's existing generic widget toolset, which provides functionally such as remote filesystem browsing and a visualization pipeline editor, allows custom applications to easily provide UI elements for advanced features. 
 
 
-One important note, a significant number of changes went into adding Python UI support into VisIt. Traditionally, VisIt uses a component-based architecture where the Python command line interface, the graphical user interface, and the *viewer* exist as separate applications that communicate over sockets. Adding Python UI functionality required these three separate components to work together as single unified application. This required components that once communicated only over sockets to also be able to directly interact with each other. Care is needed when sharing data in this new scenario, we are still refactoring parts of VisIt to better support embedded use cases.
+One important note, a significant number of changes went into adding Python UI support to VisIt. VisIt uses a component-based architecture where traditionally the CLI, the GUI, and the *viewer* exist as separate applications that communicate over sockets. Adding Python UI functionality required these three separate components to work together in a single address space. We refactored these components to support socket and direct interactions. Care is needed for event loop handling and data sharing in this new scenario. We are still refactoring parts of VisIt to better support embedded use cases.
 
-To introduce VisIt's Python UI interface, we start with `Listing 3`_,  which provides a simple PySide visualization application that utilizes VisIt under the hood. We then describe two complex applications that use VisIt's Python UI interface with several embedded renderer windows.
+To introduce VisIt's Python UI interface, we start with `Listing 3`_,  which provides a simple PySide visualization application that utilizes VisIt under the hood. We then describe two complex applications that use VisIt's Python UI interface with several embedded Render Windows.
 
 .. _Listing 3:
 
@@ -201,62 +217,62 @@ Listing 3: Custom application that animates an Isosurface with a sweep across Is
 
     class IsosurfaceWindow(QWidget):
         def __init__(self):
-            super(IsosurfaceWindow,self).__init__()
-            self.__init_widgets()
-            # Setup our example plot.
-            OpenDatabase("noise.silo")
-            AddPlot("Pseudocolor","hardyglobal")
-            AddOperator("Isosurface")
-            self.update_isovalue(1.0)
-            DrawPlots()
+          super(IsosurfaceWindow,self).__init__()
+          self.__init_widgets()
+          # Setup our example plot.
+          OpenDatabase("noise.silo")
+          AddPlot("Pseudocolor","hardyglobal")
+          AddOperator("Isosurface")
+          self.update_isovalue(1.0)
+          DrawPlots()
         def __init_widgets(self):
-            # Create Qt layouts and widgets.
-            vlout = QVBoxLayout(self)
-            glout = QGridLayout()
-            self.title   = QLabel("Iso Contour Sweep Example")
-            self.title.setFont(QFont("Arial", 20, bold=True))
-            self.sweep   = QPushButton("Sweep")
-            self.lbound  = QLineEdit("1.0")
-            self.ubound  = QLineEdit("99.0")
-            self.step    = QLineEdit("2.0")
-            self.current = QLabel("Current % =")
-            f = QFont("Arial",bold=True,italic=True)
-            self.current.setFont(f)
-            self.rwindow = pyside_support.GetRenderWindow(1)
-            # Add title and main render winodw.
-            vlout.addWidget(self.title)
-            vlout.addWidget(self.rwindow,10)
-            glout.addWidget(self.current,1,3)
-            # Add sweep controls.
-            glout.addWidget(QLabel("Lower %"),2,1)
-            glout.addWidget(QLabel("Upper %"),2,2)
-            glout.addWidget(QLabel("Step %"),2,3)
-            glout.addWidget(self.lbound,3,1)
-            glout.addWidget(self.ubound,3,2)
-            glout.addWidget(self.step,3,3)
-            glout.addWidget(self.sweep,4,3)
-            vlout.addLayout(glout,1)
-            self.sweep.clicked.connect(self.exe_sweep)
-            self.resize(600,600)
+          # Create Qt layouts and widgets.
+          vlout = QVBoxLayout(self)
+          glout = QGridLayout()
+          self.title   = QLabel("Isosurface Sweep Example")
+          self.title.setFont(QFont("Arial", 20, bold=True))
+          self.sweep   = QPushButton("Sweep")
+          self.lbound  = QLineEdit("1.0")
+          self.ubound  = QLineEdit("99.0")
+          self.step    = QLineEdit("2.0")
+          self.current = QLabel("Current % =")
+          f = QFont("Arial",bold=True,italic=True)
+          self.current.setFont(f)
+          self.rwindow = pyside_support.GetRenderWindow(1)
+          # Add title and main render winodw.
+          vlout.addWidget(self.title)
+          vlout.addWidget(self.rwindow,10)
+          glout.addWidget(self.current,1,3)
+          # Add sweep controls.
+          glout.addWidget(QLabel("Lower %"),2,1)
+          glout.addWidget(QLabel("Upper %"),2,2)
+          glout.addWidget(QLabel("Step %"),2,3)
+          glout.addWidget(self.lbound,3,1)
+          glout.addWidget(self.ubound,3,2)
+          glout.addWidget(self.step,3,3)
+          glout.addWidget(self.sweep,4,3)
+          vlout.addLayout(glout,1)
+          self.sweep.clicked.connect(self.exe_sweep)
+          self.resize(600,600)
         def update_isovalue(self,perc):
-            # Change the % value used by
-            # the isosurface operator.
-            iatts = IsosurfaceAttributes()
-            iatts.contourMethod = iatts.Percent 
-            iatts.contourPercent = (perc)
-            SetOperatorOptions(iatts)
-            txt = "Current % = "  + "%0.2f" % perc
-            self.current.setText(txt)
+          # Change the % value used by
+          # the isosurface operator.
+          iatts = IsosurfaceAttributes()
+          iatts.contourMethod = iatts.Percent 
+          iatts.contourPercent = (perc)
+          SetOperatorOptions(iatts)
+          txt = "Current % = "  + "%0.2f" % perc
+          self.current.setText(txt)
         def exe_sweep(self):
-            # Sweep % value accoording to 
-            # the GUI inputs.
-            lbv  = float(self.lbound.text())
-            ubv  = float(self.ubound.text())
-            stpv = float(self.step.text())
-            v = lbv
-            while v < ubv:
-                self.update_isovalue(v)
-                v+=stpv
+          # Sweep % value accoording to 
+          # the GUI inputs.
+          lbv  = float(self.lbound.text())
+          ubv  = float(self.ubound.text())
+          stpv = float(self.step.text())
+          v = lbv
+          while v < ubv:
+            self.update_isovalue(v)
+            v+=stpv
 
     # Create and show our custom window.
     main = IsosurfaceWindow()
@@ -264,15 +280,11 @@ Listing 3: Custom application that animates an Isosurface with a sweep across Is
 
 
 
-In this example, a VisIt render window is embedded in a QWidget to provide a *Pseudocolor* view of an *Isosurface* of
-the scalar field 'hardyglobal'. We create a set of UI controls that allow the user to select 
-values that control a sweep animation across a range of Isovalues.  The *sweep* button initiates the animation. To run this example, 
-the ``-pysideviewer`` flag is passed to VisIt at startup to select a unified *viewer* and CLI process. 
+In this example, a VisIt Render Window is embedded in a QWidget to provide a *Pseudocolor* view of an *Isosurface* of the scalar field 'hardyglobal'. We create a set of UI controls that allow the user to select values that control a sweep animation across a range of isovalues.  The *Sweep* button initiates the animation. To run this example, pass the ``-pysideviewer`` flag to VisIt at startup to select a unified *viewer* and CLI process: 
 
  ``> visit -cli -pysideviewer``
 
-This example was written to work as standalone script to illustrate the use of the PySide API for this paper. For most custom 
-applications, developers are better served by using QtDesigner for UI design, in lieu of hand coding the layout of UI elements. 
+This example was written to work as standalone script to illustrate the use of the PySide API for this paper. For most custom applications, developers are better served by using QtDesigner for UI design, in lieu of hand coding the layout of UI elements. 
 `Listing 4`_  provides a small example showing how to load a QtDesigner UI file using PySide.
 
 .. _Listing 4:
@@ -304,30 +316,35 @@ Advanced Custom Python UI Examples
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 .. figure:: climate-skin-gcrm-2.png
-   :scale: 30%
+   :scale: 29%
    :align: center
 
 
 .. figure:: climate-skin-gcrm-1.png 
-   :scale: 20%
+   :scale: 18%
    :align: center
 
    Climate Skins for the Global Cloud Resolving Model Viewer. :label:`climate-skin`
 
 .. figure:: embedded-example-uvcdat.png
-   :scale: 18%
+   :scale: 17%
    :align: center
 
-   Example showing integration of VisIt's components in UV-CDAT. :label:`embedded`
+   Example showing integration of VisIt plots in UV-CDAT. :label:`embedded`
    
 
 To provide more context for VisIt's Python UI interface, we now discuss two applications that
-leverage this new infrastructure: the Global Cloud Resolving Model (GCRM) [GCRM]_ Viewer and Ultra Visualization - Climate Data Analysis Tools (UV-CDAT) [UVCDAT]_, 
+leverage this new infrastructure: the Global Cloud Resolving Model (GCRM) [GCRM]_ Viewer and Ultra Visualization - Climate Data Analysis Tools (UV-CDAT) [UVCDAT]_.
 
-VisIt users in the climate community involved with the global cloud resolving model project (GCRM) mainly required a custom NetCDF reader and a small subset of domain specific plots and operations. Their goal for climate analysis was to quickly visualize models generated from simulations, and perform specialized analysis on these modules. Figure :ref:`climate-skin` shows two customized skins for the GCRM community developed in QtDesigner and loaded using PySide from VisIt's Python UI client. The customized skins embed VisIt rendering windows and reuse several of VisIt's GUI widgets. We also wrote several new analysis routines in Python for custom visualization and analysis tasks targeted for the climate community. This included providing Lat/Long grids with continental outlines and computing zonal means. Zonal mean computation was achieved by computing averages across the latitudes for each layer of elevation for a given slice in the direction of the longitude.
+The GCRM Viewer was developed for members of the climate community involved with the Global Cloud Resolving Model Project. For their analysis, GCRM users only need a small subset of VisIt's features: a custom NetCDF reader coupled to a few domain specific plots and analysis routines. We used VisIt's Python UI infrastructure to create  streamlined interfaces supporting their use cases. Figure :ref:`climate-skin` shows two customized skins for the GCRM community developed in QtDesigner and loaded using PySide from VisIt's Python UI client. The customized skins embed VisIt Render Windows and reuse several of VisIt's GUI widgets. We also wrote new Python analysis routines to support Lat/Long grids with continental outlines and computing specialized cell centered means. The mean computation involves computing averages across the latitudes for each layer of elevation for a given slice in the direction of the longitude.
 
-UV-CDAT is a multi-institutional project geared towards addressing the visualization needs of climate scientists around the world. Unlike the GCRM project which was targeted towards one specific group and file format, for UV-CDAT all of VisIt's functionality needs to be exposed and embedded alongside several other visualization applications. The goal of UV-CDAT is to bring together all the visualization and analysis routines provided within several major visualization frameworks inside one application. This marks one of the first instances where several separate fully-featured visualization packages, including VisIt, ParaView, DV3D, and VisTrails all function as part of one unified application. Figure :ref:`embedded` shows an example of using VisIt plots, along with plots from several other packages, within UV-CDAT. The core UV-CDAT application utilizes PyQt [PyQt]_ as its central interface and Python as the intermediate bridge between the visualization applications. The infrastructure changes made to VisIt to support custom Python UIs via PySide also allowed us to easily interface with PyQt. Apart from creating PyQt wrappers for the project, we also made significant investments in working out how to effectively share resources created within Python using NumPy & VTK Python data objects.
 
+.. VisIt users in the climate community involved with the global cloud resolving model project (GCRM) mainly required a custom NetCDF reader and a small subset of domain specific plots and operations. Their goal for climate analysis was to quickly visualize models generated from simulations, and perform specialized analysis on these models. Figure :ref:`climate-skin` shows two customized skins for the GCRM community developed in QtDesigner and loaded using PySide from VisIt's Python UI client. The customized skins embed VisIt rendering windows and reuse several of VisIt's GUI widgets. We also wrote several new analysis routines in Python for custom visualization and analysis tasks targeted for the climate community. This included providing Lat/Long grids with continental outlines and computing zonal means. Zonal mean computation was achieved by computing averages across the latitudes for each layer of elevation for a given slice in the direction of the longitude.
+
+UV-CDAT is a multi-institutional project focused on addressing the visualization needs of climate scientists around the world. The goal of UV-CDAT is to bring together all the visualization and analysis routines provided by several major visualization frameworks inside one application. Unlike the GCRM Viewer, which was designed for the targeted analysis of a specific group of end users, all of VisIt's functionality needs to be exposed and embedded alongside several other visualization tools in UV-CDAT. This marks one of the first instances where several separate fully-featured visualization packages, including VisIt, ParaView, DV3D, and VisTrails, all function as part of a unified application. We used VisIt's new Python UI infrastructure to integrate VisIt into UV-CDAT. Figure :ref:`embedded` shows an example of using VisIt plots, along with plots from several other packages, within UV-CDAT. The core UV-CDAT application uses PyQt [PyQt]_ as its central interface. Python is used to bridge all of the features from the integrated visualization tools. The VisIt changes to support custom Python UIs via PySide also allowed us to easily interface with PyQt. Apart from creating PyQt wrappers for the project, we also made significant investments to ensure we could effectively share resources created within Python using NumPy & VTK Python data objects.
+
+
+.. UV-CDAT is a multi-institutional project geared towards addressing the visualization needs of climate scientists around the world. Unlike the GCRM project which was targeted towards one specific group and file format, for UV-CDAT all of VisIt's functionality needs to be exposed and embedded alongside several other visualization applications. The goal of UV-CDAT is to bring together all the visualization and analysis routines provided within several major visualization frameworks inside one application. This marks one of the first instances where several separate fully-featured visualization packages, including VisIt, ParaView, DV3D, and VisTrails all function as part of one unified application. Figure :ref:`embedded` shows an example of using VisIt plots, along with plots from several other packages, within UV-CDAT. The core UV-CDAT application utilizes PyQt [PyQt]_ as its central interface and Python as the intermediate bridge between the visualization applications. The infrastructure changes made to VisIt to support custom Python UIs via PySide also allowed us to easily interface with PyQt. Apart from creating PyQt wrappers for the project, we also made significant investments in working out how to effectively share resources created within Python using NumPy & VTK Python data objects.
 
 .. _Python Filter Runtime:
 
@@ -335,26 +352,25 @@ Python Filter Runtime
 ---------------------------
 The Python Client Interface allows users to assemble visualization pipelines 
 using VisIt's existing building blocks. While VisIt provides a wide range of filters, 
-there are of course applications that require special purpose algorithms or need direct access to low-level mesh data structures. VisIt's Database, Operator, and Plot primitives are extendable via a C++ plugin infrastructure. This infrastructure allows new instances of these building blocks to be developed against an installed version of VisIt, without access to VisIt's full source tree. Whereas, creating new Expression and Query primitives in C++ currently requires VisIt's full source tree.  To provide more flexibility for custom work flows and special purpose algorithms, we extended our data flow network pipelines with a Python Filter Runtime. This extension provides two important benefits:
+there are always use cases that require special purpose algorithms or need direct access to low-level mesh data structures. VisIt's Database, Operator, and Plot primitives are extendable via a C++ plugin infrastructure. This infrastructure allows new instances of these building blocks to be developed against an installed version of VisIt, without access to VisIt's full source tree. Whereas, creating new Expression and Query primitives in C++ currently requires VisIt's full source tree.  To provide more flexibility for custom analysis, we extended our data flow network pipelines with a Python Filter Runtime. This extension provides two important benefits:
 
 * Enables runtime prototyping/modification of filters.
 * Reduces development time for special purpose/one-off filters.
 
 
-To implement this runtime, each MPI process in VisIt's *compute engine* embeds a Python interpreter. The interpreter coordinates with the rest of the pipeline using Python/C wrappers for existing pipeline control data structures. These data structures also allow requests for pipeline optimizations, for example a request to generate ghost zones. VisIt's pipelines use VTK mesh data structures internally, allowing us to pass VTK objects zero-copy between C++ and the Python interpreter using Kitware's existing VTK Python wrapper module. Python instances of VTK data arrays can also be wrapped zero-copy into *ndarrays*, opening up access to the wide range of algorithms available in NumPy and SciPy. 
+To implement this runtime, each MPI process in VisIt's *compute engine* embeds a Python interpreter. The interpreter coordinates with the rest of the pipeline using Python/C wrappers for existing pipeline control data structures. These data structures also allow requests for pipeline optimizations, for example: requesting generation of ghost cells between domains. VisIt's pipelines use VTK mesh data structures internally, allowing us to pass VTK objects zero-copy between C++ and the Python interpreter using Kitware's existing VTK Python wrapper module. Python instances of VTK data arrays can also be wrapped zero-copy into *ndarrays*, opening up access to the wide range of algorithms available in NumPy and SciPy. 
 
-To create a custom filter, the user writes a Python script that implements a class that extends a base filter class for the desired VisIt building block. The base filter classes mirror VisIt's existing C++ class hierarchy. The exact execution pattern varies according the to selected building 
-block,  however they loosely adhere to the following basic data-parallel execution pattern:
+To create a custom filter, the user writes a Python script that implements a class extending a base filter class for the desired VisIt building block. The base filter classes mirror VisIt's existing C++ class hierarchy. The exact execution pattern varies according the to base class,  however they loosely adhere to the following basic distributed-memory parallel execution pattern:
 
 * Submit requests for pipeline constraints or optimizations.
-* Initialize the filter before parallel execution. 
+* Initialize the filter state before parallel execution. 
 * Process mesh data sets in parallel on all MPI tasks. 
 * Run a post-execute method for cleanup and/or summarization. 
 
 To support the implementation of distributed-memory algorithms, the Python Filter Runtime provides a simple Python MPI wrapper module, named *mpicom*. This module includes support for collective and point-to-point messages. The interface provided by *mpicom* is quite simple, and is not as optimized or extensive as other Python MPI interface modules, as such *mpi4py* [Mpi4Py]_. We would like to eventually adopt *mpi4py* for communication, either directly or as a lower-level interface below the existing *mpicom* API.
 
 
-VisIt's Expression and Query filters are the first constructs exposed by the Python Filter Runtime. These primitives were selected because they are not currently extensible via our C++ plugin infrastructure. Python Expressions and Queries can be invoked from VisIt's GUI or the Python Client Interface. To introduce these filters, this paper will outline a simple Python Query example and discuss how a Python Expression was used to research a new OpenCL Expression Framework.
+VisIt's Expression and Query filters are the first constructs exposed by the Python Filter Runtime. These primitives were selected because they are not currently extensible via our C++ plugin infrastructure. Python Expressions and Queries can be invoked from VisIt's GUI or the Python Client Interface. To introduce these filters, this paper will outline a simple Python Query example and then discuss how a Python Expression was used to research a new OpenCL Expression Framework.
 
 .. _Listing 5:
 
@@ -365,37 +381,37 @@ Listing 5: Python Query filter that calculates the average of a cell centered sc
 
     class CellAverageQuery(SimplePythonQuery):
         def __init__(self):
-            # basic initialization
-            super(CellAverageQuery,self).__init__()
-            self.name = "Cell Average Query"
-            self.description = "Calculating scalar average."
+          # basic initialization
+          super(CellAverageQuery,self).__init__()
+          self.name = "Cell Average Query"
+          self.description = "Calculating scalar average."
         def pre_execute(self):
-            # called just prior to main execution
-            self.local_ncells = 0
-            self.local_sum    = 0.0
+          # called just prior to main execution
+          self.local_ncells = 0
+          self.local_sum    = 0.0
         def execute_chunk(self,ds_in,domain_id):
-            # called per mesh chunk assigned to 
-            # the local MPI task.
-            ncells = ds_in.GetNumberOfCells()
-            if ncells == 0:
-                return
-            vname  = self.input_var_names[0]
-            varray = ds_in.GetCellData().GetArray(vname)
-            self.local_ncells += ncells
-            for i in range(ncells):
-                self.local_sum += varray.GetTuple1(i)
+          # called per mesh chunk assigned to 
+          # the local MPI task.
+          ncells = ds_in.GetNumberOfCells()
+          if ncells == 0:
+            return
+          vname  = self.input_var_names[0]
+          varray = ds_in.GetCellData().GetArray(vname)
+          self.local_ncells += ncells
+          for i in range(ncells):
+            self.local_sum += varray.GetTuple1(i)
         def post_execute(self):
-            # called after all mesh chunks on all 
-            # processors have been processed.
-            tot_ncells = mpicom.sum(self.local_ncells)
-            tot_sum    = mpicom.sum(self.local_sum)
-            avg = tot_sum  / float(tot_ncells)
-            if mpicom.rank() == 0:
-                vname = self.input_var_names[0]
-                msg = "Average value of %s = %s"
-                msg = msg % (vname,str(avg))
-                self.set_result_text(msg)
-                self.set_result_value(avg)
+          # called after all mesh chunks on all 
+          # processors have been processed.
+          tot_ncells = mpicom.sum(self.local_ncells)
+          tot_sum    = mpicom.sum(self.local_sum)
+          avg = tot_sum  / float(tot_ncells)
+          if mpicom.rank() == 0:
+            vname = self.input_var_names[0]
+            msg = "Average value of %s = %s"
+            msg = msg % (vname,str(avg))
+            self.set_result_text(msg)
+            self.set_result_value(avg)
 
     # Tell the Python Filter Runtime which class to use 
     # as the Query filter.
@@ -418,24 +434,24 @@ Listing 6: Python Client Interface code to invoke the Cell Average Python Query 
                 vars=["default"])
 
 
-`Listing 5`_ provides an example Python Query script, and `Listing 6`_ provides example host code that can be used to invoke the Python Query from VisIt's Python Client Interface. In this example, the *pre_execute* method initializes a cell counter and a variable to hold the sum of all scalar values provided by the host MPI task.  After initialization,  the *execute_chunk* method is called for each mesh chunk assigned to the host MPI task. *execute_chunk* examines these meshes via VTK's Python wrapper interface, obtaining the number of cells and the values from a cell centered scalar field. After all chunks have been processed by the *execute_chunk* method on all MPI tasks, the *post_execute* method is called. This method uses MPI reductions to obtain the aggregate number of cells and total scalar value sum. It then calculates the average value and sets an output message and result value on the root MPI process. 
+`Listing 5`_ provides an example Python Query script and `Listing 6`_ provides example host code that can be used to invoke this Python Query from VisIt's Python Client Interface. In this example, the *pre_execute* method initializes a cell counter and a variable to hold the sum of all scalar values provided by the host MPI task.  After initialization,  the *execute_chunk* method is called for each mesh chunk assigned to the host MPI task. *execute_chunk* examines these meshes via VTK's Python wrapper interface, obtaining the number of cells and the values from a cell centered scalar field. After all chunks have been processed by the *execute_chunk* method on all MPI tasks, the *post_execute* method is called. This method uses MPI reductions to obtain the aggregate number of cells and total scalar value sum. It then calculates the average value and sets an output message and result value on the root MPI process. 
 
 
 
 Using a Python Expression to host a new OpenCL Expression Framework.
 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-The HPC compute landscape is quickly evolving towards accelerators and many-core CPUs. The complexity of porting existing codes to the new programming models supporting these architectures is a looming concern. We have an active research effort exploring OpenCL [OpenCL]_ for visualization and analysis applications on GPU clusters. 
+The HPC compute landscape is quickly evolving towards accelerators and many-core CPUs. The complexity of porting existing codes to the programming models supporting these architectures is a looming concern. We have an active research effort exploring OpenCL for visualization and analysis applications on GPU clusters. 
 
-One nice feature of OpenCL is the that it provides runtime kernel compilation.
-This opens up the possibility of assembling custom kernels that dynamically encapsulate multiple steps of a visualization pipeline into a single GPU kernel. A subset of our OpenCL research effort is focused on exploring this concept, with the goal of creating a framework that uses OpenCL as a backend for user defined expressions. This research is joint work with Maysam Moussalem and Paul Navrátil at the Texas Advanced Computing Center, and Ming Jiang at Lawrence Livermore National Laboratory. 
+One nice feature of OpenCL is runtime kernel compilation.
+This opens up the possibility of assembling custom kernels at runtime to dynamically encapsulate multiple steps of a visualization pipeline into a single fused GPU kernel. A subset of our OpenCL research effort is focused on exploring this concept, with the goal of creating a framework that uses OpenCL as a backend for user defined expressions. This research is joint work with Maysam Moussalem and Paul Navrátil at the Texas Advanced Computing Center, and Ming Jiang at LLNL. 
 
-For productivity reasons we chose Python to prototype this framework. We dropped this framework into VisIt's existing data parallel infrastructure using a Python Expression. This allowed us to test the viability of our framework on large data sets in a distributed-memory parallel setting. Rapid development and testing of this framework leveraged the following Python modules:
+We chose Python to prototype this framework for productivity reasons. We dropped this framework into VisIt's existing parallel infrastructure using a Python Expression. This allowed us to test the viability of our framework on large data sets in a distributed-memory parallel setting. Rapid development and testing of this framework leveraged the following Python modules:
 
-- *PLY* [PLY]_ was used to parse our expression language grammar. PLY provides an easy to use Python lex/yacc implementation that allowed us to implement a  front-end parser and integrate it with the Python modules used to generate and execute OpenCL kernels. 
+- *PLY* [PLY]_ was used to parse our expression language grammar. PLY provides an easy to use Python lex/yacc implementation that allowed us to implement a front-end parser and integrate it with the Python modules used to generate and execute OpenCL kernels. 
 
 - *PyOpenCL* [PyOpenCL]_ was used to interface with OpenCL and launch GPU kernels. PyOpenCL provides a wonderful interface to OpenCL that saved us an untold amount of time over the OpenCL C-API. PyOpenCL also uses *ndarrays* for data transfer between the CPU and GPU, and this was a great fit because we can easily access our data arrays as *ndarrays* using the VTK Python wrapper module.
 
-We are in the process of conducting performance studies and writing a paper with the full details of the framework. For this paper we provide a high-level execution overview and a few performance highlights:
+We are in the process of conducting performance studies and writing a paper with the full details of the framework. Here we simply provide a high-level execution overview and a few performance highlights:
 
 **Execution Overview:** 
 
@@ -443,16 +459,16 @@ An input expression, defining a new mesh field, is parsed by a PLY front-end and
 
 **Performance Highlights:**
 
-- Demonstrated speed up of up to ~20x vs an equivalent VisIt CPU expression, including transfer of data arrays to and from the GPU.
+- Demonstrated runtimes up to ~20 times faster vs an equivalent VisIt CPU expression, including transfer of data arrays to and from the GPU.
 
-- Demonstrated use in a distributed-memory parallel setting, processing a 24 billion zone rectilinear mesh using 256 GPUs on 128 nodes of LLNL’s Edge cluster. 
+- Demonstrated use in a distributed-memory parallel setting, processing a 24 billion cell rectilinear mesh using 256 GPUs on 128 nodes of LLNL’s Edge cluster. 
 
 
 Python, PLY, PyOpenCL, and VisIt's Python Expression capability allowed us to create and test this framework with a much faster turn around time than would have been possible using C/C++ APIs. Also, since the bulk of the processing was executed on GPUs, we were able to demonstrate impressive speedups. 
 
 Conclusion
 ---------------------------
-In this paper we have presented an overview of the various roles that Python plays in VisIt's software infrastructure and a few examples of visualization and analysis use cases enabled by Python in VisIt.  Python has long been an asset to VisIt as the foundation of VisIt's scripting language. We have recently extended our infrastructure to enable custom application development and low-level mesh processing algorithms in Python.  
+In this paper, we presented an overview of several roles that Python plays in VisIt's software infrastructure and a few examples of visualization and analysis use cases enabled by Python in VisIt.  Python has been an asset to VisIt as the foundation of VisIt's scripting language since 2001. This paper outlined recent extensions to VisIt's infrastructure that enable custom application development and low-level mesh processing algorithms in Python.  
 
 For future work, we are refactoring VisIt's component infrastructure to better support unified process Python UI clients. We also hope to provide more example scripts to help developers bootstrap custom Python applications that embed VisIt. We plan to extend our Python Filter Runtime to allow users to write new Databases and Operators in Python.  We would also like to provide new base classes for Python Queries and Expressions that encapsulate the VTK to *ndarray* wrapping process, allowing users to write streamlined scripts using NumPy.
 
@@ -479,9 +495,8 @@ References
 .. [EnSight09]
    EnSight User Manual. Computational Engineering International, Inc. Dec 2009.
  
-.. [OpenCL] Kronos Group, OpenCL parallel programming framework.
-
-      http://www.khronos.org/opencl/
+.. OpenCL] Kronos Group, OpenCL parallel programming framework.
+   http://www.khronos.org/opencl/
 
 .. [PLY] Beazley, D., Python Lex and Yacc.
 
@@ -508,7 +523,7 @@ References
         http://mpi4py.googlecode.com/
 
 .. [VTK96] Schroeder, W. et al, 1996. The design and implementation of an object-oriented toolkit for 3D graphics and visualization.
-   *VIS '96: Proceedings of the 7th conference on Visualization '96*
+   *VIS '96: Proceedings of the 7th conference on Visualization*
 
 
 .. [VisItPyRef] Whitlock, B. et al. VisIt Python Reference Manual.  
@@ -536,3 +551,29 @@ References
 .. [VisItWeb] VisIt Website. 
 
     https://wci.llnl.gov/codes/visit/
+
+.. [VTKSrc] VTK Source Repository. 
+
+    http://vtk.org/VTK.git
+
+.. [ITK_R1_4] ITK 1.4 Software Guide. 
+
+	http://www.itk.org/files/v1.4/ItkSoftwareGuide.pdf
+
+
+.. [MayaVi11] Ramachandran, P. and Varoquaux, G., 2011. Mayavi: 3D Visualization of Scientific Data 
+	*IEEE Computing in Science & Engineering, 13 (2), pp. 40-51*
+
+.. [MPL07] Hunter, J. D., 2007. Matplotlib: A 2D graphics environment
+    *IEEE Computing In Science & Engineering, 9 (3), pp. 90-85*
+
+.. VisTrails] L. Bavoil, S. Callahan, P. Crossno, J. Freire, C. Scheidegger, C. Silva, and H. Vo., 2005. Vistrails: Enabling interactive multiple-view visualizations.
+	*IEEE Visualization 2005, pp. 135–142 (2005)*
+
+.. [PV_R3_0] Paraview 3.0 Release Notes
+
+   http://www.paraview.org/Wiki/Release_Notes_3.0
+
+.. [VisTrails] L. Bavoil, et al, 2005. Vistrails: Enabling interactive multiple-view visualizations.
+	*IEEE Visualization 2005, pp. 135–142 (2005)*
+
